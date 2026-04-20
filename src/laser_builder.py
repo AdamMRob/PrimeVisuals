@@ -91,6 +91,34 @@ HTML = r"""<!DOCTYPE html>
       font-size: 10px; text-transform: uppercase; letter-spacing: 0.09em;
       color: #999; padding: 9px 14px; border-bottom: 1px solid #eee; font-weight: 700;
     }
+
+    /* ── Grid size row ── */
+    .size-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .size-row input[type=number] {
+      width: 64px; font-family: monospace; font-size: 12px;
+      padding: 5px 8px; border: 1px solid #bbb; border-radius: 5px;
+    }
+
+    /* ── Mode tabs ── */
+    .tab-row { display: flex; margin-bottom: 18px; }
+    .tab {
+      font-size: 12px; font-weight: 700; padding: 6px 22px;
+      border: 1px solid #bbb; background: #fff; color: #555;
+      cursor: pointer; font-family: monospace;
+    }
+    .tab:first-child { border-radius: 5px 0 0 5px; }
+    .tab:last-child  { border-radius: 0 5px 5px 0; margin-left: -1px; }
+    .tab.active      { background: #1d1d1f; color: #fff; border-color: #1d1d1f; }
+
+    /* ── Upload panel ── */
+    .upload-row { display: flex; gap: 36px; flex-wrap: wrap; margin-bottom: 16px; }
+    .upload-col { display: flex; flex-direction: column; gap: 8px; }
+    .preproc-row { display: flex; }
+    .preproc-row .secondary             { border-radius: 0; margin-left: -1px; }
+    .preproc-row .secondary:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+    .preproc-row .secondary:last-child  { border-radius: 0 5px 5px 0; }
+    .preproc-row .secondary.active { background: #1d1d1f; color: #fff; border-color: #1d1d1f; }
+    .density-row { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
   </style>
 </head>
 <body>
@@ -99,24 +127,81 @@ HTML = r"""<!DOCTYPE html>
   <h1>Laser Plane Visualiser</h1>
   <p>
     Three planes perpendicular to X: &nbsp;A at x=0 (target), &nbsp;B at x=80 (guide), &nbsp;C at x=160 (laser source). &nbsp;
-    Lasers fire C → B → A. &nbsp;20×20 grid, cell centres at ±0.5, ±1.5 … ±9.5 in Y and Z.
+    Lasers fire C → B → A. &nbsp;Grid maps to a ±10 × ±10 YZ space.
   </p>
 </header>
 
 <main>
-  <div class="sect">Draw patterns</div>
-  <div class="draw-row">
-    <div class="grid-wrap">
-      <div class="grid-label">Plane A &nbsp;<span class="grid-sub">x = 0 &nbsp;(target image)</span></div>
-      <svg id="grid-a" class="grid"></svg>
-    </div>
-    <div class="grid-wrap">
-      <div class="grid-label">Plane B &nbsp;<span class="grid-sub">x = 80 &nbsp;(guide image)</span></div>
-      <svg id="grid-b" class="grid"></svg>
-      <div class="grid-sub" id="counter">B: 0 / A: 0</div>
+  <!-- Grid size -->
+  <div class="size-row">
+    <span class="sect" style="margin:0">Grid size (N×N)</span>
+    <input type="number" id="n-input" min="5" max="100" value="20"
+           onchange="setN(+this.value)" onkeydown="if(event.key==='Enter')setN(+this.value)">
+    <button class="secondary" onclick="setN(20)">20</button>
+    <button class="secondary" onclick="setN(50)">50</button>
+    <button class="secondary" onclick="setN(100)">100</button>
+  </div>
+  <div id="mode-note" class="hidden"
+       style="font-size:11px;color:#b00;font-family:monospace;margin-bottom:10px;">
+    Draw mode requires N ≤ 50 — switched to Upload.
+  </div>
+
+  <!-- Mode tabs -->
+  <div class="tab-row">
+    <button class="tab active" id="tab-draw"   onclick="setMode('draw')">Draw</button>
+    <button class="tab"        id="tab-upload" onclick="setMode('upload')">Upload</button>
+  </div>
+
+  <!-- Draw panel -->
+  <div id="draw-panel">
+    <div class="sect">Draw patterns</div>
+    <div class="draw-row">
+      <div class="grid-wrap">
+        <div class="grid-label">Plane A &nbsp;<span class="grid-sub">x = 0 &nbsp;(target image)</span></div>
+        <svg id="grid-a" class="grid"></svg>
+      </div>
+      <div class="grid-wrap">
+        <div class="grid-label">Plane B &nbsp;<span class="grid-sub">x = 80 &nbsp;(guide image)</span></div>
+        <svg id="grid-b" class="grid"></svg>
+      </div>
     </div>
   </div>
 
+  <!-- Upload panel -->
+  <div id="upload-panel" class="hidden">
+    <div class="sect">Upload patterns</div>
+    <div class="upload-row">
+      <div class="upload-col">
+        <div class="grid-label">Plane A &nbsp;<span class="grid-sub">x = 0 &nbsp;(target image)</span></div>
+        <input type="file" accept="image/*" onchange="handleUpload(event,'A')">
+        <div class="preproc-row">
+          <button class="secondary active" id="pp-A-lum" onclick="setPreproc('A','luminance')">Luminance</button>
+          <button class="secondary"        id="pp-A-edg" onclick="setPreproc('A','edges')">Edges</button>
+        </div>
+        <canvas id="preview-A"
+          style="width:200px;height:200px;image-rendering:pixelated;border:1px solid #aaa;display:block;background:#f4f4f4"></canvas>
+      </div>
+      <div class="upload-col">
+        <div class="grid-label">Plane B &nbsp;<span class="grid-sub">x = 80 &nbsp;(guide image)</span></div>
+        <input type="file" accept="image/*" onchange="handleUpload(event,'B')">
+        <div class="preproc-row">
+          <button class="secondary active" id="pp-B-lum" onclick="setPreproc('B','luminance')">Luminance</button>
+          <button class="secondary"        id="pp-B-edg" onclick="setPreproc('B','edges')">Edges</button>
+        </div>
+        <canvas id="preview-B"
+          style="width:200px;height:200px;image-rendering:pixelated;border:1px solid #aaa;display:block;background:#f4f4f4"></canvas>
+      </div>
+    </div>
+    <div class="density-row">
+      <label class="grid-label">Density</label>
+      <input type="range" id="density-slider" min="0" max="100" value="30"
+             oninput="updateDensity(this.value)" style="width:220px">
+      <span id="density-label" class="grid-sub">30%</span>
+    </div>
+  </div>
+
+  <!-- Shared counter + controls -->
+  <div class="grid-sub" id="counter" style="margin-bottom:10px">B: 0 / A: 0</div>
   <div class="controls">
     <select id="strategy">
       <option value="min">Minimise angle of incidence</option>
@@ -131,6 +216,8 @@ HTML = r"""<!DOCTYPE html>
   <div id="output" class="hidden">
     <div class="out-header">
       <span>Output</span>
+      <span id="sample-label"
+            style="font-size:10px;color:#888;font-family:monospace;font-weight:400;text-transform:none;letter-spacing:0"></span>
       <button class="secondary" id="toggle-btn" onclick="toggleBeams()">Hide Beams</button>
     </div>
     <div class="plot-box">
@@ -146,19 +233,33 @@ HTML = r"""<!DOCTYPE html>
 
 <script>
 // ── Constants ──────────────────────────────────────────────────────────────────
-const N         = 20;    // grid dimension (N×N cells)
-const CELL_PX   = 22;    // SVG pixels per cell side
-const X_A       = 0;
-const X_B       = 80;
-const X_C       = 160;
-const MAX_SWAPS = 500;   // swap-repair limit before giving up
+const MAX_N      = 100;   // hard grid cap
+const MAX_DRAW_N = 50;    // draw mode cap — cells ≥ 8 px in ~400 px display
+const MAX_3D     = 500;   // max laser traces rendered in the 3D view
+const X_A        = 0;
+const X_B        = 80;
+const X_C        = 160;
+const MAX_SWAPS  = 500;   // swap-repair limit before giving up
+
+// ── Mutable grid config ────────────────────────────────────────────────────────
+let N       = 20;
+let CELL_PX = 20;
+function computeCellPx(n) { return Math.max(3, Math.floor(400 / n)); }
 
 // ── State ──────────────────────────────────────────────────────────────────────
-const litA = new Set();  // "col,row" keys for lit cells on Plane A
-const litB = new Set();
+let litA = new Set();   // "col,row" keys for lit cells on Plane A (draw mode)
+let litB = new Set();
 let beamsVisible    = true;
-let laserBaseIdx    = 0;  // index of first laser trace in 3D plot
+let laserBaseIdx    = 0;
 let laserTraceCount = 0;
+let appMode         = 'draw';
+
+// Upload mode state
+const upload = {
+  A: { rawLum: null, sortedIndices: null, mode: 'luminance' },
+  B: { rawLum: null, sortedIndices: null, mode: 'luminance' },
+};
+let densityPct = 30;
 
 // ── Grid construction ──────────────────────────────────────────────────────────
 function buildGrid(svgId, litSet) {
@@ -196,15 +297,171 @@ function toggleCell(litSet, col, row, rect) {
 }
 
 function updateCounter() {
-  const na = litA.size, nb = litB.size;
-  document.getElementById('counter').textContent = `B: ${nb} / A: ${na}`;
-  document.getElementById('create-btn').disabled = (na !== nb || na === 0);
+  if (appMode === 'draw') {
+    const na = litA.size, nb = litB.size;
+    document.getElementById('counter').textContent = `B: ${nb} / A: ${na}`;
+    document.getElementById('create-btn').disabled = (na !== nb || na === 0);
+  } else {
+    const T     = Math.round(densityPct / 100 * N * N);
+    const ready = upload.A.sortedIndices !== null && upload.B.sortedIndices !== null && T > 0;
+    document.getElementById('counter').textContent =
+      ready ? `${T} lit cells per plane ✓` : 'Upload both images to begin';
+    document.getElementById('create-btn').disabled = !ready;
+  }
+}
+
+// ── Grid size control ──────────────────────────────────────────────────────────
+function setN(n) {
+  N       = Math.max(5, Math.min(MAX_N, Math.round(n) || 20));
+  CELL_PX = computeCellPx(N);
+  document.getElementById('n-input').value = N;
+  buildHmapAxes();
+
+  // Reset draw state
+  litA = new Set(); litB = new Set();
+  ['grid-a', 'grid-b'].forEach(id => { document.getElementById(id).innerHTML = ''; });
+  buildGrid('grid-a', litA);
+  buildGrid('grid-b', litB);
+
+  // Reset upload state
+  upload.A.rawLum = upload.A.sortedIndices = null;
+  upload.B.rawLum = upload.B.sortedIndices = null;
+  ['preview-A', 'preview-B'].forEach(id => {
+    const c = document.getElementById(id);
+    if (c) { c.width = c.height = N; c.getContext('2d').clearRect(0, 0, N, N); }
+  });
+
+  if (N > MAX_DRAW_N && appMode === 'draw') {
+    setMode('upload');
+    document.getElementById('mode-note').classList.remove('hidden');
+  } else {
+    document.getElementById('mode-note').classList.add('hidden');
+  }
+
+  updateCounter();
+  document.getElementById('output').classList.add('hidden');
+}
+
+// ── Mode switching ─────────────────────────────────────────────────────────────
+function setMode(mode) {
+  appMode = mode;
+  document.getElementById('draw-panel').classList.toggle('hidden', mode !== 'draw');
+  document.getElementById('upload-panel').classList.toggle('hidden', mode !== 'upload');
+  document.getElementById('tab-draw').classList.toggle('active', mode === 'draw');
+  document.getElementById('tab-upload').classList.toggle('active', mode === 'upload');
+  updateCounter();
+}
+
+// ── Upload mode ────────────────────────────────────────────────────────────────
+function applySobel(lum, n) {
+  const mag = new Float32Array(n * n);
+  for (let r = 1; r < n - 1; r++) {
+    for (let c = 1; c < n - 1; c++) {
+      const gx = -lum[(r-1)*n+(c-1)] - 2*lum[r*n+(c-1)] - lum[(r+1)*n+(c-1)]
+                + lum[(r-1)*n+(c+1)] + 2*lum[r*n+(c+1)] + lum[(r+1)*n+(c+1)];
+      const gy = -lum[(r-1)*n+(c-1)] - 2*lum[(r-1)*n+c] - lum[(r-1)*n+(c+1)]
+                + lum[(r+1)*n+(c-1)] + 2*lum[(r+1)*n+c] + lum[(r+1)*n+(c+1)];
+      mag[r*n+c] = Math.sqrt(gx*gx + gy*gy);
+    }
+  }
+  return mag;
+}
+
+function recomputeRanked(which) {
+  const { rawLum, mode } = upload[which];
+  if (!rawLum) return;
+  const vals = mode === 'edges' ? applySobel(rawLum, N) : rawLum;
+  const idx  = Array.from({ length: N * N }, (_, i) => i);
+  // Edges: highest gradient first (lit = strong edge).
+  // Luminance: darkest pixel first (lit = dark).
+  idx.sort(mode === 'edges'
+    ? (a, b) => vals[b] - vals[a]
+    : (a, b) => vals[a] - vals[b]);
+  upload[which].sortedIndices = idx;
+}
+
+function updatePreview(which) {
+  const { sortedIndices } = upload[which];
+  if (!sortedIndices) return;
+  const T      = Math.round(densityPct / 100 * N * N);
+  const litSet = new Set(sortedIndices.slice(0, T));
+  const canvas = document.getElementById(`preview-${which}`);
+  canvas.width = canvas.height = N;
+  const ctx    = canvas.getContext('2d');
+  const imgData = ctx.createImageData(N, N);
+  for (let i = 0; i < N * N; i++) {
+    const v = litSet.has(i) ? 0 : 255;
+    imgData.data[i*4] = imgData.data[i*4+1] = imgData.data[i*4+2] = v;
+    imgData.data[i*4+3] = 255;
+  }
+  ctx.putImageData(imgData, 0, 0);
+}
+
+function handleUpload(event, which) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const img = new Image();
+  img.onload = () => {
+    const oc  = document.createElement('canvas');
+    oc.width  = oc.height = N;
+    const ctx = oc.getContext('2d');
+    ctx.drawImage(img, 0, 0, N, N);
+    const { data } = ctx.getImageData(0, 0, N, N);
+    const lum = new Float32Array(N * N);
+    for (let i = 0; i < N * N; i++)
+      lum[i] = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
+    upload[which].rawLum = lum;
+    recomputeRanked(which);
+    updatePreview(which);
+    updateCounter();
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+function setPreproc(which, mode) {
+  upload[which].mode = mode;
+  const isEdge = mode === 'edges';
+  document.getElementById(`pp-${which}-lum`).classList.toggle('active', !isEdge);
+  document.getElementById(`pp-${which}-edg`).classList.toggle('active',  isEdge);
+  recomputeRanked(which);
+  updatePreview(which);
+}
+
+function updateDensity(pct) {
+  densityPct = parseInt(pct);
+  const T = Math.round(densityPct / 100 * N * N);
+  document.getElementById('density-label').textContent = `${densityPct}% — ${T} cells`;
+  updatePreview('A');
+  updatePreview('B');
+  updateCounter();
+}
+
+function getUploadPoints(which) {
+  const { sortedIndices } = upload[which];
+  if (!sortedIndices) return null;
+  const T   = Math.round(densityPct / 100 * N * N);
+  const pts = [];
+  for (let k = 0; k < T; k++) {
+    const idx = sortedIndices[k];
+    pts.push(cellToYZ(idx % N, Math.floor(idx / N)));
+  }
+  return pts;
+}
+
+// ── Heatmap axis arrays (rebuilt whenever N changes) ──────────────────────────
+let HMAP_X = [], HMAP_Y = [];
+function buildHmapAxes() {
+  HMAP_X = Array.from({ length: N }, (_, i) => cellToYZ(i, 0).y);
+  HMAP_Y = Array.from({ length: N }, (_, i) => cellToYZ(0, i).z);
 }
 
 // ── Coordinate helpers ─────────────────────────────────────────────────────────
-// Screen convention: col 0 = leftmost → y = −9.5 ; row 0 = top → z = +9.5
+// Maps (col, row) to physical YZ in [-10, 10] × [-10, 10] for any N.
+// Cell centres are evenly spaced with step = 20/N.
 function cellToYZ(col, row) {
-  return { y: col - 9.5, z: 9.5 - row };
+  const step = 20 / N;
+  return { y: (col + 0.5) * step - 10, z: 10 - (row + 0.5) * step };
 }
 
 // Returns lit points in raster order (top→bottom, left→right within each row)
@@ -228,35 +485,17 @@ function computeC(a, b) {
 // an array of { a, b } pairs aligned with aPoints order.
 
 function pairMinAngle(aPoints, bPoints) {
-  // Greedy nearest-neighbour in YZ: minimises transverse displacement,
-  // so each laser travels as close to parallel with the X axis as possible.
-  const used = new Array(bPoints.length).fill(false);
-  return aPoints.map(a => {
-    let best = -1, bestD2 = Infinity;
-    bPoints.forEach((b, k) => {
-      if (used[k]) return;
-      const d2 = (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
-      if (d2 < bestD2) { bestD2 = d2; best = k; }
-    });
-    used[best] = true;
-    return { a, b: bPoints[best] };
-  });
+  // Sort both by diagonal (y+z), pair in the same order → minimises average displacement.
+  const sa = [...aPoints].sort((a, b) => (a.y + a.z) - (b.y + b.z));
+  const sb = [...bPoints].sort((a, b) => (a.y + a.z) - (b.y + b.z));
+  return sa.map((a, i) => ({ a, b: sb[i] }));
 }
 
 function pairMaxAngle(aPoints, bPoints) {
-  // Greedy furthest-neighbour in YZ: maximises transverse displacement,
-  // spreading the lasers as obliquely as possible.
-  const used = new Array(bPoints.length).fill(false);
-  return aPoints.map(a => {
-    let best = -1, bestD2 = -Infinity;
-    bPoints.forEach((b, k) => {
-      if (used[k]) return;
-      const d2 = (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
-      if (d2 > bestD2) { bestD2 = d2; best = k; }
-    });
-    used[best] = true;
-    return { a, b: bPoints[best] };
-  });
+  // Sort A ascending, B descending → maximises average displacement.
+  const sa = [...aPoints].sort((a, b) => (a.y + a.z) - (b.y + b.z));
+  const sb = [...bPoints].sort((a, b) => (b.y + b.z) - (a.y + a.z));
+  return sa.map((a, i) => ({ a, b: sb[i] }));
 }
 
 function pairRandom(aPoints, bPoints) {
@@ -271,15 +510,17 @@ function pairRandom(aPoints, bPoints) {
 
 // ── Collision detection & repair ───────────────────────────────────────────────
 
-// Two laser origins on Plane C collide when they fall within a 0.1×0.1 hitbox.
+// O(n) hash-map collision detection: two C-origins collide within the 0.1×0.1 hitbox.
+function cKey(c) {
+  return `${Math.round(c.y / 0.1)},${Math.round(c.z / 0.1)}`;
+}
+
 function findFirstCollision(aArr, bArr) {
+  const seen = new Map();
   for (let i = 0; i < aArr.length; i++) {
-    const ci = computeC(aArr[i], bArr[i]);
-    for (let j = i + 1; j < aArr.length; j++) {
-      const cj = computeC(aArr[j], bArr[j]);
-      if (Math.abs(ci.y - cj.y) < 0.1 && Math.abs(ci.z - cj.z) < 0.1)
-        return { found: true, i, j };
-    }
+    const k = cKey(computeC(aArr[i], bArr[i]));
+    if (seen.has(k)) return { found: true, i: seen.get(k), j: i };
+    seen.set(k, i);
   }
   return { found: false };
 }
@@ -309,30 +550,24 @@ function repairCollisions(aArr, initialBArr) {
 
 // ── Frame precomputation ───────────────────────────────────────────────────────
 
-// Shared axis coordinate arrays for the heatmap (re-used across frames).
-// HMAP_X encodes Y values (columns), HMAP_Y encodes Z values (rows, top→bottom).
-const HMAP_X = Array.from({ length: N }, (_, i) => i - 9.5); // −9.5 … 9.5
-const HMAP_Y = Array.from({ length: N }, (_, i) => 9.5 - i); //  9.5 … −9.5
-
 // Linearly interpolate every laser at each integer X from 0 to 160.
 // Returns 161 N×N grids where 1 = illuminated, 0 = dark.
 function precomputeFrames(pairs) {
   const frames = [];
   for (let x = 0; x <= X_C; x++) {
-    const t    = x / X_C; // 0 = at Plane A, 1 = at Plane C
+    const t    = x / X_C;
     const grid = Array.from({ length: N }, () => new Array(N).fill(0));
 
     for (const { a, c } of pairs) {
-      // Beam position at depth x by linear interpolation between A-target and C-origin
       const y = a.y + (c.y - a.y) * t;
       const z = a.z + (c.z - a.z) * t;
 
-      // Map continuous position to nearest grid cell
-      const col = Math.round(y + 9.5);
-      const row = Math.round(9.5 - z);
+      // Inverse of cellToYZ: map continuous YZ back to nearest grid cell.
+      const col = Math.round((y + 10) * N / 20 - 0.5);
+      const row = Math.round((10 - z) * N / 20 - 0.5);
 
       if (col >= 0 && col < N && row >= 0 && row < N)
-        grid[row][col] = 1; // overlapping beams simply light the cell once
+        grid[row][col] = 1;
     }
     frames.push(grid);
   }
@@ -381,13 +616,27 @@ function render3D(pairs, aPoints, bPoints) {
     hovertemplate: 'B  y=%{y}  z=%{z}<extra></extra>',
   });
 
+  // Sample laser traces for large pair counts so the 3D view stays responsive.
+  let displayPairs = pairs;
+  let sampledMsg   = '';
+  if (pairs.length > MAX_3D) {
+    const idx = Array.from({ length: pairs.length }, (_, i) => i);
+    for (let i = idx.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [idx[i], idx[j]] = [idx[j], idx[i]];
+    }
+    displayPairs = idx.slice(0, MAX_3D).map(i => pairs[i]);
+    sampledMsg   = `3D showing ${MAX_3D} of ${pairs.length} beams (sampled)`;
+  }
+  document.getElementById('sample-label').textContent = sampledMsg;
+
   // First laser trace starts at this index (used by toggleBeams)
   laserBaseIdx    = traces.length;
-  laserTraceCount = pairs.length;
+  laserTraceCount = displayPairs.length;
 
   // One trace per laser, coloured by index across 280° of the HSL wheel
-  pairs.forEach(({ a, b, c }, i) => {
-    const hue = Math.round((i / pairs.length) * 280);
+  displayPairs.forEach(({ a, b, c }, i) => {
+    const hue = Math.round((i / displayPairs.length) * 280);
     traces.push({
       type: 'scatter3d', mode: 'lines',
       x: [X_C, X_B, X_A],
@@ -514,8 +763,21 @@ function clearError() {
 function create() {
   clearError();
 
-  const aPoints = getPoints(litA);
-  const bPoints = getPoints(litB);
+  let aPoints, bPoints;
+  if (appMode === 'draw') {
+    aPoints = getPoints(litA);
+    bPoints = getPoints(litB);
+  } else {
+    aPoints = getUploadPoints('A');
+    bPoints = getUploadPoints('B');
+    if (!aPoints || !bPoints) { showError('Upload both images first.'); return; }
+    if (aPoints.length === 0) { showError('Density is 0 — move the slider up.'); return; }
+  }
+
+  if (aPoints.length !== bPoints.length || aPoints.length === 0) {
+    showError('Both grids must have the same number of lit cells.');
+    return;
+  }
 
   // Apply selected pairing strategy to get initial B-assignment for each A-point
   const stratKey = document.getElementById('strategy').value;
@@ -550,9 +812,11 @@ function create() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────
+buildHmapAxes();
 buildGrid('grid-a', litA);
 buildGrid('grid-b', litB);
 updateCounter();
+updateDensity(densityPct);
 </script>
 </body>
 </html>
