@@ -601,24 +601,58 @@ function repairCollisions(aArr, initialBArr) {
 
 // ── Frame precomputation ───────────────────────────────────────────────────────
 
-// Linearly interpolate every laser at each integer X from 0 to 160.
-// Returns 161 N×N grids where 1 = illuminated, 0 = dark.
+// A laser beam is a cylinder of radius r = half a cell width (10/N physical units).
+// Its cross-section on a plane perpendicular to X is an ellipse:
+//   semi-minor b = r           (width perpendicular to beam projection, always = r)
+//   semi-major a = r / |dx|   (stretches along beam projection as angle increases)
+// where dx is the X-component of the normalised beam direction vector.
+// Major axis direction in YZ = projection of beam onto the plane.
+// Minor axis direction in YZ = perpendicular to major, in-plane.
+//
+// Because ellipse shape is constant along each straight beam, geometry is
+// precomputed once per pair and reused across all 161 X-slices.
 function precomputeFrames(pairs) {
+  const r    = 10 / N;   // beam radius = half a cell width (physical units)
+  const step = 20 / N;   // physical cell width
+
+  const beams = pairs.map(({ a, c }) => {
+    const vlen = Math.sqrt(160*160 + (c.y-a.y)**2 + (c.z-a.z)**2);
+    const dx   = 160 / vlen;
+    const dy   = (c.y - a.y) / vlen;
+    const dz   = (c.z - a.z) / vlen;
+    const L    = Math.sqrt(dy*dy + dz*dz);
+    // Major axis unit vector in YZ: (dy,dz)/L  (projection of beam onto plane)
+    // Minor axis unit vector in YZ: (−dz,dy)/L (perpendicular)
+    const uy = L > 1e-9 ? dy / L : 1,  uz = L > 1e-9 ? dz / L : 0;
+    const wy = -uz,                      wz =  uy;
+    return { a, c, a_ell: r / Math.abs(dx), b_ell: r, uy, uz, wy, wz };
+  });
+
   const frames = [];
-  for (let x = 0; x <= X_C; x++) {
-    const t    = x / X_C;
+  for (let xi = 0; xi <= X_C; xi++) {
+    const t    = xi / X_C;
     const grid = Array.from({ length: N }, () => new Array(N).fill(0));
 
-    for (const { a, c } of pairs) {
-      const y = a.y + (c.y - a.y) * t;
-      const z = a.z + (c.z - a.z) * t;
+    for (const { a, c, a_ell, b_ell, uy, uz, wy, wz } of beams) {
+      const yc = a.y + (c.y - a.y) * t;
+      const zc = a.z + (c.z - a.z) * t;
 
-      // Inverse of cellToYZ: map continuous YZ back to nearest grid cell.
-      const col = Math.round((y + 10) * N / 20 - 0.5);
-      const row = Math.round((10 - z) * N / 20 - 0.5);
+      // Bounding-box scan — a_ell is a safe bound in both axes.
+      const col0 = Math.max(0,   Math.floor((yc - a_ell + 10) * N / 20));
+      const col1 = Math.min(N-1, Math.ceil( (yc + a_ell + 10) * N / 20));
+      const row0 = Math.max(0,   Math.floor((10 - zc - a_ell) * N / 20));
+      const row1 = Math.min(N-1, Math.ceil( (10 - zc + a_ell) * N / 20));
 
-      if (col >= 0 && col < N && row >= 0 && row < N)
-        grid[row][col] = 1;
+      for (let row = row0; row <= row1; row++) {
+        for (let col = col0; col <= col1; col++) {
+          const py = (col + 0.5) * step - 10 - yc;
+          const pz = 10 - (row + 0.5) * step  - zc;
+          const pm = py * uy + pz * uz;   // projection onto major axis
+          const pn = py * wy + pz * wz;   // projection onto minor axis
+          if ((pm / a_ell) ** 2 + (pn / b_ell) ** 2 <= 1)
+            grid[row][col] = 1;
+        }
+      }
     }
     frames.push(grid);
   }
@@ -626,6 +660,19 @@ function precomputeFrames(pairs) {
 }
 
 // ── 3D render ──────────────────────────────────────────────────────────────────
+
+// Returns ellipse parameters for a beam from a → c on any plane ⊥ to X.
+function beamEllipseProps(a, c) {
+  const r    = 10 / N;
+  const vlen = Math.sqrt(160*160 + (c.y-a.y)**2 + (c.z-a.z)**2);
+  const dx   = 160 / vlen;
+  const dy   = (c.y - a.y) / vlen;
+  const dz   = (c.z - a.z) / vlen;
+  const L    = Math.sqrt(dy*dy + dz*dz);
+  const uy   = L > 1e-9 ? dy / L : 1,  uz = L > 1e-9 ? dz / L : 0;
+  return { a_ell: r / Math.abs(dx), b_ell: r, uy, uz, wy: -uz, wz: uy };
+}
+
 function render3D(pairs, aPoints, bPoints) {
   const traces = [];
 
@@ -645,28 +692,6 @@ function render3D(pairs, aPoints, bPoints) {
     });
   });
 
-  // Lit cell markers on Plane A
-  traces.push({
-    type: 'scatter3d', mode: 'markers',
-    x: aPoints.map(() => X_A),
-    y: aPoints.map(p => p.y),
-    z: aPoints.map(p => p.z),
-    marker: { size: 5, color: '#0071e3', symbol: 'square', opacity: 0.9 },
-    name: 'A pixels',
-    hovertemplate: 'A  y=%{y}  z=%{z}<extra></extra>',
-  });
-
-  // Lit cell markers on Plane B
-  traces.push({
-    type: 'scatter3d', mode: 'markers',
-    x: bPoints.map(() => X_B),
-    y: bPoints.map(p => p.y),
-    z: bPoints.map(p => p.z),
-    marker: { size: 5, color: '#bf5af2', symbol: 'square', opacity: 0.9 },
-    name: 'B pixels',
-    hovertemplate: 'B  y=%{y}  z=%{z}<extra></extra>',
-  });
-
   // Sample laser traces for large pair counts so the 3D view stays responsive.
   let displayPairs = pairs;
   let sampledMsg   = '';
@@ -680,6 +705,37 @@ function render3D(pairs, aPoints, bPoints) {
     sampledMsg   = `3D showing ${MAX_3D} of ${pairs.length} beams (sampled)`;
   }
   document.getElementById('sample-label').textContent = sampledMsg;
+
+  // Physical beam footprints on planes A and B — ellipses whose shape is
+  // determined by the angle of incidence of each laser on the plane.
+  // All ellipses are combined into two traces (one per plane) with NaN separators.
+  const N_PTS = 24;
+  const axs = [], ays = [], azs = [];
+  const bxs = [], bys = [], bzs = [];
+  displayPairs.forEach(({ a, b, c }) => {
+    const { a_ell, b_ell, uy, uz, wy, wz } = beamEllipseProps(a, c);
+    for (let i = 0; i <= N_PTS; i++) {
+      const th = (i / N_PTS) * 2 * Math.PI;
+      const ey = a_ell * Math.cos(th) * uy + b_ell * Math.sin(th) * wy;
+      const ez = a_ell * Math.cos(th) * uz + b_ell * Math.sin(th) * wz;
+      axs.push(X_A);  ays.push(a.y + ey);  azs.push(a.z + ez);
+      bxs.push(X_B);  bys.push(b.y + ey);  bzs.push(b.z + ez);
+    }
+    axs.push(NaN);  ays.push(NaN);  azs.push(NaN);
+    bxs.push(NaN);  bys.push(NaN);  bzs.push(NaN);
+  });
+  traces.push({
+    type: 'scatter3d', mode: 'lines',
+    x: axs, y: ays, z: azs,
+    line: { color: '#0071e3', width: 1.5 },
+    name: 'A beam footprints', hoverinfo: 'skip',
+  });
+  traces.push({
+    type: 'scatter3d', mode: 'lines',
+    x: bxs, y: bys, z: bzs,
+    line: { color: '#bf5af2', width: 1.5 },
+    name: 'B beam footprints', hoverinfo: 'skip',
+  });
 
   // First laser trace starts at this index (used by toggleBeams)
   laserBaseIdx    = traces.length;
