@@ -178,6 +178,11 @@ HTML = r"""<!DOCTYPE html>
           <button class="secondary active" id="pp-A-lum" onclick="setPreproc('A','luminance')">Luminance</button>
           <button class="secondary"        id="pp-A-edg" onclick="setPreproc('A','edges')">Edges</button>
         </div>
+        <div class="preproc-row">
+          <button class="secondary active" id="dt-A-non" onclick="setDither('A','none')">No dither</button>
+          <button class="secondary"        id="dt-A-bay" onclick="setDither('A','bayer')">Bayer</button>
+          <button class="secondary"        id="dt-A-rnd" onclick="setDither('A','noise')">Noise</button>
+        </div>
         <canvas id="preview-A"
           style="width:200px;height:200px;image-rendering:pixelated;border:1px solid #aaa;display:block;background:#f4f4f4"></canvas>
       </div>
@@ -187,6 +192,11 @@ HTML = r"""<!DOCTYPE html>
         <div class="preproc-row">
           <button class="secondary active" id="pp-B-lum" onclick="setPreproc('B','luminance')">Luminance</button>
           <button class="secondary"        id="pp-B-edg" onclick="setPreproc('B','edges')">Edges</button>
+        </div>
+        <div class="preproc-row">
+          <button class="secondary active" id="dt-B-non" onclick="setDither('B','none')">No dither</button>
+          <button class="secondary"        id="dt-B-bay" onclick="setDither('B','bayer')">Bayer</button>
+          <button class="secondary"        id="dt-B-rnd" onclick="setDither('B','noise')">Noise</button>
         </div>
         <canvas id="preview-B"
           style="width:200px;height:200px;image-rendering:pixelated;border:1px solid #aaa;display:block;background:#f4f4f4"></canvas>
@@ -256,10 +266,22 @@ let appMode         = 'draw';
 
 // Upload mode state
 const upload = {
-  A: { rawLum: null, sortedIndices: null, mode: 'luminance' },
-  B: { rawLum: null, sortedIndices: null, mode: 'luminance' },
+  A: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none' },
+  B: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none' },
 };
 let densityPct = 30;
+
+// 8×8 Bayer threshold matrix — offsets tile across the image producing a halftone.
+const BAYER8 = [
+  [ 0, 32,  8, 40,  2, 34, 10, 42],
+  [48, 16, 56, 24, 50, 18, 58, 26],
+  [12, 44,  4, 36, 14, 46,  6, 38],
+  [60, 28, 52, 20, 62, 30, 54, 22],
+  [ 3, 35, 11, 43,  1, 33,  9, 41],
+  [51, 19, 59, 27, 49, 17, 57, 25],
+  [15, 47,  7, 39, 13, 45,  5, 37],
+  [63, 31, 55, 23, 61, 29, 53, 21],
+];
 
 // ── Grid construction ──────────────────────────────────────────────────────────
 function buildGrid(svgId, litSet) {
@@ -367,13 +389,33 @@ function applySobel(lum, n) {
   return mag;
 }
 
+// Add a dither offset to pixel values before ranking so the rank boundary is
+// perturbed rather than a hard slice — the count T is still exact because we
+// select by rank, not by threshold value.
+function applyDither(vals, n, mode) {
+  if (mode === 'none') return vals;
+  const result = new Float32Array(vals);
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < vals.length; i++) { if (vals[i] < min) min = vals[i]; if (vals[i] > max) max = vals[i]; }
+  const amp = (max - min) * 0.4; // 40% of value range — strong enough to dither mid-tones
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      const offset = mode === 'bayer'
+        ? (BAYER8[row % 8][col % 8] / 64 - 0.5) * amp
+        : (Math.random() - 0.5) * amp;
+      result[row * n + col] += offset;
+    }
+  }
+  return result;
+}
+
 function recomputeRanked(which) {
-  const { rawLum, mode } = upload[which];
+  const { rawLum, mode, ditherMode } = upload[which];
   if (!rawLum) return;
-  const vals = mode === 'edges' ? applySobel(rawLum, N) : rawLum;
+  const base = mode === 'edges' ? applySobel(rawLum, N) : rawLum;
+  const vals = applyDither(base, N, ditherMode);
   const idx  = Array.from({ length: N * N }, (_, i) => i);
-  // Edges: highest gradient first (lit = strong edge).
-  // Luminance: darkest pixel first (lit = dark).
+  // Edges: highest gradient first. Luminance: darkest pixel first.
   idx.sort(mode === 'edges'
     ? (a, b) => vals[b] - vals[a]
     : (a, b) => vals[a] - vals[b]);
@@ -424,6 +466,15 @@ function setPreproc(which, mode) {
   const isEdge = mode === 'edges';
   document.getElementById(`pp-${which}-lum`).classList.toggle('active', !isEdge);
   document.getElementById(`pp-${which}-edg`).classList.toggle('active',  isEdge);
+  recomputeRanked(which);
+  updatePreview(which);
+}
+
+function setDither(which, mode) {
+  upload[which].ditherMode = mode;
+  [['non','none'], ['bay','bayer'], ['rnd','noise']].forEach(([k, m]) => {
+    document.getElementById(`dt-${which}-${k}`).classList.toggle('active', mode === m);
+  });
   recomputeRanked(which);
   updatePreview(which);
 }
