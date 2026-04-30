@@ -277,8 +277,8 @@ let appMode         = 'draw';
 
 // Upload mode state
 const upload = {
-  A: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none' },
-  B: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none' },
+  A: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none', img: null },
+  B: { rawLum: null, sortedIndices: null, mode: 'luminance', ditherMode: 'none', img: null },
 };
 let densityPct = 30;
 
@@ -355,12 +355,15 @@ function setN(n) {
   buildGrid('grid-a', litA);
   buildGrid('grid-b', litB);
 
-  // Reset upload state
-  upload.A.rawLum = upload.A.sortedIndices = null;
-  upload.B.rawLum = upload.B.sortedIndices = null;
-  ['preview-A', 'preview-B'].forEach(id => {
-    const c = document.getElementById(id);
-    if (c) { c.width = c.height = N; c.getContext('2d').clearRect(0, 0, N, N); }
+  // Reset / re-sample upload state at the new N
+  ['A', 'B'].forEach(which => {
+    if (upload[which].img) {
+      resampleUpload(which);
+    } else {
+      upload[which].rawLum = upload[which].sortedIndices = null;
+      const c = document.getElementById(`preview-${which}`);
+      if (c) { c.width = c.height = N; c.getContext('2d').clearRect(0, 0, N, N); }
+    }
   });
 
   if (N > MAX_DRAW_N && appMode === 'draw') {
@@ -454,21 +457,30 @@ function handleUpload(event, which) {
   if (!file) return;
   const img = new Image();
   img.onload = () => {
-    const oc  = document.createElement('canvas');
-    oc.width  = oc.height = N;
-    const ctx = oc.getContext('2d');
-    ctx.drawImage(img, 0, 0, N, N);
-    const { data } = ctx.getImageData(0, 0, N, N);
-    const lum = new Float32Array(N * N);
-    for (let i = 0; i < N * N; i++)
-      lum[i] = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
-    upload[which].rawLum = lum;
-    recomputeRanked(which);
-    updatePreview(which);
+    upload[which].img = img;   // keep reference so resampleUpload can re-draw after N change
+    URL.revokeObjectURL(img.src);  // free URL store; decoded pixels remain in the img element
+    resampleUpload(which);
     updateCounter();
-    URL.revokeObjectURL(img.src);
   };
   img.src = URL.createObjectURL(file);
+}
+
+// Re-sample the stored image element at the current N, recompute ranks, and
+// refresh the preview. Called on first upload and whenever N changes.
+function resampleUpload(which) {
+  const img = upload[which].img;
+  if (!img) return;
+  const oc  = document.createElement('canvas');
+  oc.width  = oc.height = N;
+  const ctx = oc.getContext('2d');
+  ctx.drawImage(img, 0, 0, N, N);
+  const { data } = ctx.getImageData(0, 0, N, N);
+  const lum = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++)
+    lum[i] = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
+  upload[which].rawLum = lum;
+  recomputeRanked(which);
+  updatePreview(which);
 }
 
 function setPreproc(which, mode) {
@@ -622,9 +634,9 @@ function initCrossSection(pairs) {
   // Per-beam constants: ellipse size in canvas pixels, rotation angle, and
   // hue. Ellipse shape (a_px, b_px, rot) is invariant along each straight
   // beam. Hue matches the 3D laser trace so users can correlate the two views.
-  const beams = pairs.map(({ a, c }, i) => {
+  const beams = pairs.map(({ a, c }) => {
     const { a_ell, b_ell, uy, uz } = beamEllipseProps(a, c);
-    const hue = Math.round((i / pairs.length) * 280);
+    const hue = beamHue(a);
     return {
       ay: a.y, az: a.z, cy: c.y, cz: c.z,
       a_px: a_ell * scale,
@@ -713,6 +725,12 @@ function initCrossSection(pairs) {
 
 // ── 3D render ──────────────────────────────────────────────────────────────────
 
+// Hue (0–280°) based on the A-point's diagonal position (bottom-left → top-right).
+// Using the A-plane position keeps colour consistent regardless of pairing strategy.
+function beamHue(a) {
+  return Math.round(((a.y + a.z + 20) / 40) * 280);
+}
+
 // Returns ellipse parameters for a beam from a → c on any plane ⊥ to X.
 function beamEllipseProps(a, c) {
   const r    = 10 / N;
@@ -793,9 +811,10 @@ function render3D(pairs, aPoints, bPoints) {
   laserBaseIdx    = traces.length;
   laserTraceCount = displayPairs.length;
 
-  // One trace per laser, coloured by index across 280° of the HSL wheel
+  // One trace per laser, coloured by A-point diagonal position (bottom-left→top-right).
+  // This keeps hue consistent across all pairing strategies, including random.
   displayPairs.forEach(({ a, b, c }, i) => {
-    const hue = Math.round((i / displayPairs.length) * 280);
+    const hue = beamHue(a);
     traces.push({
       type: 'scatter3d', mode: 'lines',
       x: [X_C, X_B, X_A],
