@@ -236,7 +236,18 @@ HTML = r"""<!DOCTYPE html>
     </div>
     <div class="plot-box">
       <div class="plot-box-title">Cross-section at X &nbsp;— drag slider to scan</div>
-      <div id="slider-view"></div>
+      <div style="padding:14px 14px 12px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;font-family:monospace;font-size:12px;color:#555">
+          <span>x=0</span>
+          <input type="range" id="cross-slider" min="0" max="160" value="0" style="width:200px;flex-shrink:0">
+          <span>x=160</span>
+          &nbsp;
+          <span id="cross-x-label" style="font-weight:700;min-width:50px">x = 0</span>
+          <span id="cross-progress" style="color:#aaa"></span>
+        </div>
+        <canvas id="cross-canvas" width="420" height="420"
+          style="display:block;background:#f8f8f8;border:1px solid #e0e0e0;border-radius:3px"></canvas>
+      </div>
     </div>
   </div>
 </main>
@@ -337,7 +348,6 @@ function setN(n) {
   N       = Math.max(5, Math.min(MAX_N, Math.round(n) || 20));
   CELL_PX = computeCellPx(N);
   document.getElementById('n-input').value = N;
-  buildHmapAxes();
 
   // Reset draw state
   litA = new Set(); litB = new Set();
@@ -500,13 +510,6 @@ function getUploadPoints(which) {
   return pts;
 }
 
-// ── Heatmap axis arrays (rebuilt whenever N changes) ──────────────────────────
-let HMAP_X = [], HMAP_Y = [];
-function buildHmapAxes() {
-  HMAP_X = Array.from({ length: N }, (_, i) => cellToYZ(i, 0).y);
-  HMAP_Y = Array.from({ length: N }, (_, i) => cellToYZ(0, i).z);
-}
-
 // ── Coordinate helpers ─────────────────────────────────────────────────────────
 // Maps (col, row) to physical YZ in [-10, 10] × [-10, 10] for any N.
 // Cell centres are evenly spaced with step = 20/N.
@@ -599,64 +602,113 @@ function repairCollisions(aArr, initialBArr) {
   return { bs, success: false };
 }
 
-// ── Frame precomputation ───────────────────────────────────────────────────────
-
-// A laser beam is a cylinder of radius r = half a cell width (10/N physical units).
-// Its cross-section on a plane perpendicular to X is an ellipse:
-//   semi-minor b = r           (width perpendicular to beam projection, always = r)
-//   semi-major a = r / |dx|   (stretches along beam projection as angle increases)
-// where dx is the X-component of the normalised beam direction vector.
-// Major axis direction in YZ = projection of beam onto the plane.
-// Minor axis direction in YZ = perpendicular to major, in-plane.
+// ── Cross-section canvas renderer ─────────────────────────────────────────────
 //
-// Because ellipse shape is constant along each straight beam, geometry is
-// precomputed once per pair and reused across all 161 X-slices.
-function precomputeFrames(pairs) {
-  const r    = 10 / N;   // beam radius = half a cell width (physical units)
-  const step = 20 / N;   // physical cell width
+// Replaces the Plotly heatmap. Draws each beam's true elliptical footprint
+// (cylinder cross-section) at the correct physical position on a canvas,
+// so the shapes are continuous rather than square grid cells.
+//
+// Pre-renders all 161 frames (x = 0…160) to ImageData objects using the
+// off-screen canvas API, yielding via requestAnimationFrame every 10 frames
+// to keep the browser responsive during computation.
+function initCrossSection(pairs) {
+  const canvas   = document.getElementById('cross-canvas');
+  const slider   = document.getElementById('cross-slider');
+  const xLabel   = document.getElementById('cross-x-label');
+  const progress = document.getElementById('cross-progress');
+  const W = canvas.width, H = canvas.height;
+  const scale = W / 20;   // canvas pixels per physical unit (420/20 = 21)
 
-  const beams = pairs.map(({ a, c }) => {
-    const vlen = Math.sqrt(160*160 + (c.y-a.y)**2 + (c.z-a.z)**2);
-    const dx   = 160 / vlen;
-    const dy   = (c.y - a.y) / vlen;
-    const dz   = (c.z - a.z) / vlen;
-    const L    = Math.sqrt(dy*dy + dz*dz);
-    // Major axis unit vector in YZ: (dy,dz)/L  (projection of beam onto plane)
-    // Minor axis unit vector in YZ: (−dz,dy)/L (perpendicular)
-    const uy = L > 1e-9 ? dy / L : 1,  uz = L > 1e-9 ? dz / L : 0;
-    const wy = -uz,                      wz =  uy;
-    return { a, c, a_ell: r / Math.abs(dx), b_ell: r, uy, uz, wy, wz };
+  // Per-beam constants: ellipse size in canvas pixels, rotation angle, and
+  // hue. Ellipse shape (a_px, b_px, rot) is invariant along each straight
+  // beam. Hue matches the 3D laser trace so users can correlate the two views.
+  const beams = pairs.map(({ a, c }, i) => {
+    const { a_ell, b_ell, uy, uz } = beamEllipseProps(a, c);
+    const hue = Math.round((i / pairs.length) * 280);
+    return {
+      ay: a.y, az: a.z, cy: c.y, cz: c.z,
+      a_px: a_ell * scale,
+      b_px: b_ell * scale,
+      // Canvas rotation: major axis is (uy, uz) in physical YZ;
+      // on canvas (Y→right, Z→up) this becomes (uy, −uz).
+      rot: Math.atan2(-uz, uy),
+      fill: `hsl(${hue},75%,55%)`,
+    };
   });
 
-  const frames = [];
-  for (let xi = 0; xi <= X_C; xi++) {
-    const t    = xi / X_C;
-    const grid = Array.from({ length: N }, () => new Array(N).fill(0));
+  const offscreen = document.createElement('canvas');
+  offscreen.width = W; offscreen.height = H;
+  const octx = offscreen.getContext('2d');
+  const mctx  = canvas.getContext('2d');
 
-    for (const { a, c, a_ell, b_ell, uy, uz, wy, wz } of beams) {
-      const yc = a.y + (c.y - a.y) * t;
-      const zc = a.z + (c.z - a.z) * t;
-
-      // Bounding-box scan — a_ell is a safe bound in both axes.
-      const col0 = Math.max(0,   Math.floor((yc - a_ell + 10) * N / 20));
-      const col1 = Math.min(N-1, Math.ceil( (yc + a_ell + 10) * N / 20));
-      const row0 = Math.max(0,   Math.floor((10 - zc - a_ell) * N / 20));
-      const row1 = Math.min(N-1, Math.ceil( (10 - zc + a_ell) * N / 20));
-
-      for (let row = row0; row <= row1; row++) {
-        for (let col = col0; col <= col1; col++) {
-          const py = (col + 0.5) * step - 10 - yc;
-          const pz = 10 - (row + 0.5) * step  - zc;
-          const pm = py * uy + pz * uz;   // projection onto major axis
-          const pn = py * wy + pz * wz;   // projection onto minor axis
-          if ((pm / a_ell) ** 2 + (pn / b_ell) ** 2 <= 1)
-            grid[row][col] = 1;
-        }
-      }
+  function drawAxes(ctx) {
+    // Faint grid lines every 2 physical units
+    ctx.strokeStyle = '#e8e8e8'; ctx.lineWidth = 0.5;
+    for (let v = -8; v <= 8; v += 2) {
+      const px = W/2 + v * scale, py = H/2 - v * scale;
+      ctx.beginPath(); ctx.moveTo(px, 0);   ctx.lineTo(px, H);   ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,  py);  ctx.lineTo(W,  py);  ctx.stroke();
     }
-    frames.push(grid);
+    // Centre axes
+    ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(W/2, 0); ctx.lineTo(W/2, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W,  H/2); ctx.stroke();
+    // Axis boundary box (±10 units)
+    ctx.strokeStyle = '#bbb'; ctx.lineWidth = 1;
+    const m = 10 * scale;
+    ctx.strokeRect(W/2 - m, H/2 - m, 2*m, 2*m);
   }
-  return frames;
+
+  function renderFrame(xi) {
+    const t = xi / 160;
+    octx.fillStyle = '#f8f8f8';
+    octx.fillRect(0, 0, W, H);
+    drawAxes(octx);
+
+    // One fill per beam so each ellipse can take its own hue. With ≤ ~10k
+    // beams this is still well under one frame's budget on modern hardware.
+    for (const { ay, az, cy, cz, a_px, b_px, rot, fill } of beams) {
+      const yc = ay + (cy - ay) * t;
+      const zc = az + (cz - az) * t;
+      const cx = W/2 + yc * scale;
+      const canY = H/2 - zc * scale;
+      octx.fillStyle = fill;
+      octx.beginPath();
+      octx.ellipse(cx, canY, a_px, b_px, rot, 0, 2 * Math.PI);
+      octx.fill();
+    }
+    return octx.getImageData(0, 0, W, H);
+  }
+
+  const frames = new Array(161);
+  slider.oninput = () => {
+    const xi = parseInt(slider.value);
+    xLabel.textContent = `x = ${xi}`;
+    if (frames[xi]) mctx.putImageData(frames[xi], 0, 0);
+  };
+  slider.value = 0;
+  xLabel.textContent = 'x = 0';
+
+  // Render frame 0 immediately so there's something visible straight away
+  frames[0] = renderFrame(0);
+  mctx.putImageData(frames[0], 0, 0);
+
+  // Pre-render the remaining frames in batches, yielding between each batch
+  progress.textContent = 'Computing frames…';
+  let xi = 1;
+  function renderBatch() {
+    const end = Math.min(xi + 10, 161);
+    while (xi < end) { frames[xi] = renderFrame(xi); xi++; }
+    progress.textContent = `${xi}/161`;
+    if (xi < 161) {
+      requestAnimationFrame(renderBatch);
+    } else {
+      progress.textContent = '';
+      // Refresh the displayed frame in case user moved the slider during rendering
+      if (frames[parseInt(slider.value)]) mctx.putImageData(frames[parseInt(slider.value)], 0, 0);
+    }
+  }
+  requestAnimationFrame(renderBatch);
 }
 
 // ── 3D render ──────────────────────────────────────────────────────────────────
@@ -793,60 +845,6 @@ function render3D(pairs, aPoints, bPoints) {
   document.getElementById('toggle-btn').textContent = 'Hide Beams';
 }
 
-// ── Slider render ──────────────────────────────────────────────────────────────
-function renderSlider(framesData) {
-  const initialTrace = {
-    type: 'heatmap',
-    x: HMAP_X, y: HMAP_Y,   // Y and Z axis labels baked into the trace
-    z: framesData[0],
-    colorscale: [[0, '#f8f8f8'], [1, '#1a1a2e']],
-    showscale: false,
-    zmin: 0, zmax: 1,
-    hovertemplate: 'y=%{x}  z=%{y}  lit=%{z}<extra></extra>',
-  };
-
-  const sliderSteps = framesData.map((_, i) => ({
-    label: String(i),
-    method: 'animate',
-    args: [[`f${i}`], {
-      mode: 'immediate',
-      transition: { duration: 0 },
-      frame: { duration: 0, redraw: true },
-    }],
-  }));
-
-  const layout = {
-    xaxis: { title: 'Y', zeroline: false, tickmode: 'auto', nticks: 11 },
-    yaxis: { title: 'Z', zeroline: false, tickmode: 'auto', nticks: 11, scaleanchor: 'x' },
-    margin: { t: 20, b: 90, l: 55, r: 20 },
-    height: 520,
-    paper_bgcolor: '#ffffff',
-    plot_bgcolor:  '#f4f4f4',
-    font: { family: 'monospace', size: 11 },
-    sliders: [{
-      active: 0,
-      currentvalue: {
-        prefix: 'x = ',
-        visible: true,
-        xanchor: 'center',
-        font: { family: 'monospace', size: 13, color: '#333' },
-      },
-      pad: { t: 50, b: 10 },
-      steps: sliderSteps,
-    }],
-  };
-
-  // Each animation frame updates only z; x and y are inherited from the initial trace
-  const animFrames = framesData.map((grid, i) => ({
-    name: `f${i}`,
-    data: [{ z: grid }],
-  }));
-
-  Plotly.purge('slider-view');
-  Plotly.newPlot('slider-view', [initialTrace], layout, { responsive: true })
-    .then(() => Plotly.addFrames('slider-view', animFrames));
-}
-
 // ── Beam toggle ────────────────────────────────────────────────────────────────
 function toggleBeams() {
   beamsVisible = !beamsVisible;
@@ -909,17 +907,13 @@ function create() {
   // Build final pairs with C-origins computed from the repaired B-assignments
   const finalPairs = aArr.map((a, i) => ({ a, b: bs[i], c: computeC(a, bs[i]) }));
 
-  // Pre-compute all 161 cross-section frames before any rendering
-  const frames = precomputeFrames(finalPairs);
-
   // Show output section first so Plotly can measure container dimensions
   document.getElementById('output').classList.remove('hidden');
   render3D(finalPairs, aPoints, bPoints);
-  renderSlider(frames);
+  initCrossSection(finalPairs);
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────
-buildHmapAxes();
 buildGrid('grid-a', litA);
 buildGrid('grid-b', litB);
 updateCounter();
